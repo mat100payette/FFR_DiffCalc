@@ -1,14 +1,15 @@
 import csv
 import json
 import os
-import zlib
 from pathlib import Path
 from typing import Final
+import zlib
 
 import aiohttp
 from aiohttp.client import ClientSession
 import asyncio
 
+from args import Arguments
 from models import Chart, FFRNote, NoteDirection, SongInfo
 from serialization import ChartEncoder
 
@@ -17,7 +18,7 @@ FFR_SONGLIST_URL_VAR: Final = 'FFR_SONGLIST_URL'
 MAX_FETCH_CONCURRENCY: Final = 50
 CHARTS_FILE_NAME: Final = 'charts.txt'
 
-async def get_charts():
+async def get_charts(args: Arguments):
 
     # Get songlist url
     songlist_url = os.getenv(FFR_SONGLIST_URL_VAR)
@@ -31,6 +32,7 @@ async def get_charts():
 
     # Fetch and parse songinfo list
     async with aiohttp.ClientSession() as session:
+        print('Fetching song info data.')
         songlist_response = await _fetch(songlist_url, session)
 
     if songlist_response is None:
@@ -51,7 +53,7 @@ async def get_charts():
     async with aiohttp.ClientSession() as session:
         beatboxes_response = []
         total_fetched = 0
-        print(f'Fetching beatbox data. This may take a while.')
+        print('Fetching beatbox data. This may take a while.')
 
         for chunk in beatbox_url_chunks:
             # Note: this preserves ordering in chunks
@@ -64,17 +66,18 @@ async def get_charts():
     beatboxes_list = [_parse_beatbox(beatbox_raw) for beatbox_raw in beatboxes_response]
 
     beatboxes_count = len(beatboxes_list)
-    print(f'Parsed {beatboxes_count} beatbox objects.')
+    print(f'Parsed {beatboxes_count} beatbox objects.\n')
 
     # Validate counts
-    if songinfo_count == beatboxes_count:
+    if songinfo_count != beatboxes_count:
         raise Exception(f'Songinfo count ({songinfo_count}) and beatboxes count ({beatboxes_count}) are not identical.')
 
     # Create the final `Chart` list
     charts = [Chart(songinfo_list[i], beatboxes_list[i]) for i in range(beatboxes_count)]
 
-    # Save on disk to avoid having to re-fetch multiple times
-    _save_charts(charts)
+    # Save on disk if asked for
+    if args.save_charts:
+        _save_charts(charts)
 
     return charts
 
@@ -89,11 +92,15 @@ def _save_charts(charts: list[Chart]):
     with open(save_path, 'wb+') as file:
         file.write(compressed_charts)
 
+    print(f'Charts saved to {save_path}')
+
 
 def load_charts():
     '''Loads a `list[Chart]` from disk.'''
 
     load_path = Path().resolve().joinpath(CHARTS_FILE_NAME)
+    print(f'Loading charts from {load_path}')
+
     with open(load_path, 'rb') as file:
         charts_compressed = file.read()
 
@@ -122,6 +129,8 @@ def load_charts():
         chart = Chart(song_info, beatbox)
 
         charts.append(chart)
+
+    print(f'Parsed {len(charts)} chart objects.\n')
 
     return charts
 
@@ -158,11 +167,15 @@ def _parse_beatbox(beatbox_data: bytes):
 
     notes: list[FFRNote] = []
     for note_raw in notes_raw:
-        direction = NoteDirection(note_raw[0])
-        frame: int = note_raw[1]
+        try:
+            direction = NoteDirection(note_raw[0])
+            frame: int = note_raw[1]
 
-        note = FFRNote(direction, frame)
+            note = FFRNote(direction, frame)
 
-        notes.append(note)
+            notes.append(note)
+
+        except Exception as e:
+            print(f'Ignored bad note {note_raw}: {e}')
 
     return notes
